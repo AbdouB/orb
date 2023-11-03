@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/paulmach/orb"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 func TestGeometry(t *testing.T) {
@@ -106,15 +107,15 @@ func TestGeometryUnmarshal(t *testing.T) {
 	}{
 		{
 			name: "point",
-			geom: orb.Point{},
+			geom: orb.Point{1, 2},
 		},
 		{
 			name: "multi point",
-			geom: orb.MultiPoint{},
+			geom: orb.MultiPoint{{1, 2}, {3, 4}},
 		},
 		{
 			name: "linestring",
-			geom: orb.LineString{},
+			geom: orb.LineString{{1, 2}, {3, 4}, {5, 6}},
 		},
 		{
 			name: "multi linestring",
@@ -130,7 +131,7 @@ func TestGeometryUnmarshal(t *testing.T) {
 		},
 		{
 			name: "collection",
-			geom: orb.Collection{orb.LineString{}},
+			geom: orb.Collection{orb.LineString{{1, 2}, {3, 4}}, orb.Point{5, 6}},
 		},
 	}
 
@@ -195,6 +196,47 @@ func TestGeometryUnmarshal(t *testing.T) {
 	}
 }
 
+func TestGeometryUnmarshal_errors(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "point",
+			data: `{"type":"Point","coordinates":1}`,
+		},
+		{
+			name: "multi point",
+			data: `{"type":"MultiPoint","coordinates":2}`,
+		},
+		{
+			name: "linestring",
+			data: `{"type":"LineString","coordinates":3}`,
+		},
+		{
+			name: "multi linestring",
+			data: `{"type":"MultiLineString","coordinates":4}`,
+		},
+		{
+			name: "polygon",
+			data: `{"type":"Polygon","coordinates":10.2}`,
+		},
+		{
+			name: "multi polygon",
+			data: `{"type":"MultiPolygon","coordinates":{}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := UnmarshalGeometry([]byte(tc.data))
+			if err == nil {
+				t.Errorf("expected error, got nothing")
+			}
+		})
+	}
+}
+
 func TestHelperTypes(t *testing.T) {
 	// This test makes sure the marshal-unmarshal loop does the same thing.
 	// The code and types here are complicated to avoid duplicate code.
@@ -245,12 +287,12 @@ func TestHelperTypes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// check marshalling
-			data, err := tc.helper.(json.Marshaler).MarshalJSON()
+			data, err := json.Marshal(tc.helper)
 			if err != nil {
 				t.Fatalf("marshal error: %v", err)
 			}
 
-			geoData, err := NewGeometry(tc.geom).MarshalJSON()
+			geoData, err := json.Marshal(NewGeometry(tc.geom))
 			if err != nil {
 				t.Fatalf("marshal error: %v", err)
 			}
@@ -262,13 +304,13 @@ func TestHelperTypes(t *testing.T) {
 			}
 
 			// check unmarshalling
-			err = tc.output.(json.Unmarshaler).UnmarshalJSON(data)
+			err = json.Unmarshal(data, tc.output)
 			if err != nil {
 				t.Fatalf("unmarshal error: %v", err)
 			}
 
 			geo := &Geometry{}
-			err = geo.UnmarshalJSON(data)
+			err = json.Unmarshal(data, geo)
 			if err != nil {
 				t.Fatalf("unmarshal error: %v", err)
 			}
@@ -280,21 +322,76 @@ func TestHelperTypes(t *testing.T) {
 			}
 
 			// invalid json should return error
-			err = tc.output.(json.Unmarshaler).UnmarshalJSON([]byte(`{invalid}`))
+			err = json.Unmarshal([]byte(`{invalid}`), tc.output)
 			if err == nil {
 				t.Errorf("should return error for invalid json")
 			}
 
 			// not the correct type should return error.
 			// non of they types directly supported are geometry collections.
-			data, err = NewGeometry(orb.Collection{orb.Point{}}).MarshalJSON()
+			data, err = json.Marshal(NewGeometry(orb.Collection{orb.Point{}}))
 			if err != nil {
 				t.Errorf("unmarshal error: %v", err)
 			}
 
-			err = tc.output.(json.Unmarshaler).UnmarshalJSON(data)
+			err = json.Unmarshal(data, tc.output)
 			if err == nil {
 				t.Fatalf("should return error for invalid json")
+			}
+		})
+
+		t.Run("bson "+tc.name, func(t *testing.T) {
+			// check marshalling
+			data, err := bson.Marshal(tc.helper)
+			if err != nil {
+				t.Fatalf("marshal error: %v", err)
+			}
+
+			geoData, err := bson.Marshal(NewGeometry(tc.geom))
+			if err != nil {
+				t.Fatalf("marshal error: %v", err)
+			}
+
+			if !reflect.DeepEqual(data, geoData) {
+				t.Errorf("should marshal the same")
+				t.Log(data)
+				t.Log(geoData)
+			}
+
+			// check unmarshalling
+			err = bson.Unmarshal(data, tc.output)
+			if err != nil {
+				t.Fatalf("unmarshal error: %v", err)
+			}
+
+			geo := &Geometry{}
+			err = bson.Unmarshal(data, geo)
+			if err != nil {
+				t.Fatalf("unmarshal error: %v", err)
+			}
+
+			if !orb.Equal(tc.output.(geom).Geometry(), geo.Coordinates) {
+				t.Errorf("should unmarshal the same")
+				t.Log(tc.output)
+				t.Log(geo.Coordinates)
+			}
+
+			// invalid json should return error
+			err = bson.Unmarshal([]byte(`{invalid}`), tc.output)
+			if err == nil {
+				t.Errorf("should return error for invalid bson")
+			}
+
+			// not the correct type should return error.
+			// non of they types directly supported are geometry collections.
+			data, err = bson.Marshal(NewGeometry(orb.Collection{orb.Point{}}))
+			if err != nil {
+				t.Errorf("unmarshal error: %v", err)
+			}
+
+			err = bson.Unmarshal(data, tc.output)
+			if err == nil {
+				t.Fatalf("should return error for invalid bson")
 			}
 		})
 	}
@@ -315,7 +412,10 @@ func BenchmarkGeometryMarshalJSON(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		g.MarshalJSON()
+		_, err := json.Marshal(g)
+		if err != nil {
+			b.Fatalf("unexpected error: %v", err)
+		}
 	}
 }
 
@@ -326,7 +426,7 @@ func BenchmarkGeometryUnmarshalJSON(b *testing.B) {
 	}
 
 	g := &Geometry{Coordinates: ls}
-	data, err := g.MarshalJSON()
+	data, err := json.Marshal(g)
 	if err != nil {
 		b.Fatalf("marshal error: %v", err)
 	}
@@ -334,6 +434,49 @@ func BenchmarkGeometryUnmarshalJSON(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		g.UnmarshalJSON(data)
+		err := json.Unmarshal(data, g)
+		if err != nil {
+			b.Fatalf("unexpected error: %v", err)
+		}
+	}
+}
+
+func BenchmarkGeometryMarshalBSON(b *testing.B) {
+	ls := orb.LineString{}
+	for i := 0.0; i < 1000; i++ {
+		ls = append(ls, orb.Point{i * 3.45, i * -58.4})
+	}
+
+	g := &Geometry{Coordinates: ls}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := bson.Marshal(g)
+		if err != nil {
+			b.Fatalf("unexpected error: %v", err)
+		}
+	}
+}
+
+func BenchmarkGeometryUnmarshalBSON(b *testing.B) {
+	ls := orb.LineString{}
+	for i := 0.0; i < 1000; i++ {
+		ls = append(ls, orb.Point{i * 3.45, i * -58.4})
+	}
+
+	g := &Geometry{Coordinates: ls}
+	data, err := bson.Marshal(g)
+	if err != nil {
+		b.Fatalf("marshal error: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := bson.Unmarshal(data, g)
+		if err != nil {
+			b.Fatalf("unexpected error: %v", err)
+		}
 	}
 }
